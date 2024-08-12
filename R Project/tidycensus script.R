@@ -1,3 +1,7 @@
+# THIS SCRIPT IS USED FOR GENERATING CENSUS FEATURES, JOINING THAT WITH THE #
+# EJ STRESSOR DATA, THEN RUNNING A SPATIAL JOIN WITH THE BROWNFIELDS POINTS #
+# SAR AND SPATIAL AUTOCORRELATION ANALYSIS TAKES PLACES IN THE NEXT SCRIPT  # 
+
 
 # Load necessary libraries
 library(tidycensus)
@@ -7,10 +11,12 @@ library(dplyr)
 library(stringr)
 library(ggplot2)
 
-# Set Census API key (only needed once)
-#census_api_key("api", install = TRUE)
+### SET UP 
 
-# Check all variables to select most appropriate  
+# Set Census API key (only needed once, then you can skip this)
+census_api_key("a785070a2d252fd0d07b81912b3bb437cbed9ba2", install = TRUE)
+
+# Check all Census API variables for each indicator to select which ones are needed  
 v22 <- load_variables(2022, "acs5", cache = TRUE)
 hi <- v22 %>% filter(str_detect(name,"B27010")) # Health insurance 
 inc <- v22 %>% filter(str_detect(name, "B19013")) # Income
@@ -19,7 +25,7 @@ rc <- v22 %>% filter(str_detect(name, "B03002")) # Race
 
 
 ################################################################################
-### GENERATE VARIABLES 
+### PULL EACH GIS CENSUS FEATURES FROM API
 
 ## HEALTH INSURANCE
 # Health Insurance: Total population without health insurance
@@ -67,6 +73,7 @@ median_income <- get_acs(
 
 incm_max <- max(median_income$estimate, na.rm = TRUE)
 
+# STANDARDIZE BY MAX
 median_income <- median_income %>% 
   group_by(GEOID) %>% 
   summarize(medn_incm = estimate/incm_max)  # INCOME IS MAX STANDARDIZED TO BE ON SAME SCALE AS OTHER VARS
@@ -135,24 +142,25 @@ non_white_percentage <- non_hispanic_white %>%
   select(GEOID, PoC)
 
 
-
 ################################################################################
-## MERGE
-# Merge all datasets
-final_data <- health_insur_percentage %>%
+
+### JOIN TOGETHER ALL CENSUS FEATURES AS ONE FEATURE CLASS
+
+# Table join all together 
+census_data <- health_insur_percentage %>%
   left_join(median_income, by = "GEOID") %>%
   left_join(bachelors_plus_percentage, by = "GEOID") %>%
   left_join(non_white_percentage, by = "GEOID")
 
-# Inspect the final dataset
-head(final_data)
+# Project finale GIS feature into NAD 83 UTM Zone 18N (units are in meters)
+census_data <- st_transform(census_data, crs = 26918)
 
 
 ################################################################################
-### VISUALIZE 
+### CREATE CHOROPLETH MAPS FOR EACH INDIVIDUAL FEATURE 
 
 # Insurance
-ggplot(final_data) +
+ggplot(census_data) +
   geom_sf(aes(fill = insur_rate)) +
   #scale_fill_gradient(low = "white", high = "black") +  # Grayscale gradient
   scale_fill_viridis_c(option = "A") +  # Viridis color scale
@@ -162,7 +170,7 @@ ggplot(final_data) +
 
 
 # Median Household Income
-ggplot(final_data) +
+ggplot(census_data) +
   geom_sf(aes(fill = medn_incm)) +
   #scale_fill_gradient(low = "white", high = "black") +  # Grayscale gradient
   scale_fill_viridis_c(option = "B") +  # Viridis color scale
@@ -171,7 +179,7 @@ ggplot(final_data) +
        fill = "Medn Hshld Income")
 
 # Education Rate
-ggplot(final_data) +
+ggplot(census_data) +
   geom_sf(aes(fill = educ_rate)) +
   #scale_fill_gradient(low = "white", high = "black") +  # Grayscale gradient
   scale_fill_viridis_c(option = "C") +  # Viridis color scale
@@ -180,7 +188,7 @@ ggplot(final_data) +
        fill = "Education Bachelors or Above")
 
 # People of Color
-ggplot(final_data) +
+ggplot(census_data) +
   geom_sf(aes(fill = PoC)) +
   #scale_fill_gradient(low = "white", high = "black") +  # Grayscale gradient
   scale_fill_viridis_c(option = "D") +  # Viridis color scale
@@ -189,7 +197,128 @@ ggplot(final_data) +
        fill = "Percentage of People of Color")
 
 ################################################################################
-### EXPORT SHAPEFILE
+### JOIN THIS CENSUS FEATURE WITH THE EJ STRESSORS DATASET
+
+# Import ej stressors dataset from personal geodatabase
+ej_stressors_fc <- st_read(dsn = "C:/Users/cjkno/Documents/My Documents/Classes - '23 Spring/Research/Paper - Peter Brownfield Paper/Arc Project - Peter's Brownfield Paper/Default.gdb",
+                        layer = "EnvironmentalJusticeEJLawCombinedStressorSummary_UPDATED")
+
+# Make a copy 
+ej_stressors <- ej_stressors_fc 
+
+# STANDARDIZE BY MAXIMUM
+ejstrs_max <- max(ej_stressors$CST_BG, na.rm = TRUE) # CST_BG = Combined Stressor Total: Block Group Value (Sum Adverse High Stressors)
+
+ej_stressors <- ej_stressors %>% 
+  mutate(EJStress = CST_BG/ejstrs_max)  # THIS VARIABLE IS MAX STANDARDIZED TO BE ON SAME SCALE AS OTHER VARS
+
+# Reduce that FeatureClass to just GEOID and EJStress 
+ej_stressors <- ej_stressors %>% select(GEOID, EJStress)
+
+#Remove duplicates 
+ej_stressors <- ej_stressors %>%
+  distinct(GEOID, .keep_all = TRUE)
+
+# Run a table join to merge the census feature class and EJ stressor feature class
+joined_data <- census_data %>%
+  left_join(st_drop_geometry(ej_stressors), by = "GEOID") # Have to drop geometry to do a non-spatial join of sf objects 
+
+################################################################################
+
+### SPATIAL JOIN THE FEATURE CLASS AND BROWNFIELDS BASED ON DISTANCE 
+
+## PREP THE DATA
+
+# Import brownfields dataset
+brownfields_fc <- st_read(dsn = "C:/Users/cjkno/Documents/My Documents/Classes - '23 Spring/Research/Paper - Peter Brownfield Paper/Arc Project - Peter's Brownfield Paper/Default.gdb",
+                       layer = "BrownfieldSites")
+
+# Create a copy
+brownfields <- brownfields_fc
+
+# Project both datasets in NAD 83 UTM Zone 18N (units are in meters)
+brownfields <- st_transform(brownfields, crs = 26918)
+joined_data <- st_transform(joined_data, crs = 26918)
+#st_crs(brownfields)
+#st_crs(joined_data)
+
+# Reduce to just pref_id_num field and rename to ID
+brownfields <- brownfields %>% 
+  mutate(ID = pref_id_num) %>% 
+  select(ID)
+
+## RUN THE SPATIAL JOIN(S)
+
+# Spatial Join to joined_data from brownfields, within a distance 
+
+# These spatial joins create a new feature for every match, so when a Block Group has multiple 
+# brownfields within this distance, this creates multiple rows (one for each brownfield ID)
+
+
+# 500 meter join
+joined_within_distance <- st_join(
+  joined_data,
+  brownfields,
+  join = st_is_within_distance,
+  dist = 500, # Units are in meters following the projection
+  left = TRUE
+)
+
+# Count the number of unique IDs within 500 meters for each feature in joined_data
+joined_data_with_counts <- joined_within_distance %>%
+  group_by(GEOID) %>%
+  summarise(BrwnFl_500 = n_distinct(ID, na.rm = TRUE)) 
+
+# Join the count result back to the original joined_data
+final_joined_data <- left_join(joined_data, st_drop_geometry(joined_data_with_counts), by = "GEOID")
+
+
+# 250 meter join 
+joined_within_distance <- st_join(
+  joined_data,
+  brownfields,
+  join = st_is_within_distance,
+  dist = 250, # Units are in meters following the projection
+  left = TRUE
+)
+
+# Count the number of unique IDs within 250 meters for each feature in joined_data
+joined_data_with_counts <- joined_within_distance %>%
+  group_by(GEOID) %>%
+  summarise(BrwnFl_250 = n_distinct(ID, na.rm = TRUE)) 
+
+# Join the count result back to the original joined_data
+final_joined_data <- left_join(final_joined_data, st_drop_geometry(joined_data_with_counts), by = "GEOID")
+
+
+# 1000 meter join 
+joined_within_distance <- st_join(
+  joined_data,
+  brownfields,
+  join = st_is_within_distance,
+  dist = 1000, # Units are in meters following the projection
+  left = TRUE
+)
+
+# Count the number of unique IDs within 1000 meters for each feature in joined_data
+joined_data_with_counts <- joined_within_distance %>%
+  group_by(GEOID) %>%
+  summarise(BrwnFl_1k = n_distinct(ID, na.rm = TRUE)) 
+
+# Join the count result back to the original joined_data
+final_joined_data <- left_join(final_joined_data, st_drop_geometry(joined_data_with_counts), by = "GEOID")
+
+
+
+# Drop empty geometries (fields with no geometry and no census data)
+final_joined_data <- final_joined_data %>% 
+  filter(!st_is_empty(geometry))
+
+################################################################################
+### EXPORT SHAPEFILE TO WORKSPACE 
 
 # Export the combined data as a shapefile
-st_write(final_data, "nj_insurance_income_education_race_2022.shp")
+st_write(final_joined_data, "NJ_Brownfields_Census_EJStressors.shp")
+
+write.csv(st_drop_geometry(final_joined_data), file = "C:/Users/cjkno/Documents/My Documents/Classes - '23 Spring/Research/Paper - Peter Brownfield Paper/R Project - Peter's Brownfield Paper/sf.csv")
+

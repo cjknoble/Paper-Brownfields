@@ -14,7 +14,7 @@ library(ggplot2)
 ### SET UP 
 
 # Set Census API key (only needed once, then you can skip this)
-census_api_key("a785070a2d252fd0d07b81912b3bb437cbed9ba2", install = TRUE)
+census_api_key("api", install = TRUE)
 
 # Check all Census API variables for each indicator to select which ones are needed  
 v22 <- load_variables(2022, "acs5", cache = TRUE)

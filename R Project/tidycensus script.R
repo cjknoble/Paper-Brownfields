@@ -14,7 +14,7 @@ library(ggplot2)
 ### SET UP 
 
 # Set Census API key (only needed once, then you can skip this)
-census_api_key("api", install = TRUE)
+#census_api_key("censusapikey", install = TRUE)
 
 # Check all Census API variables for each indicator to select which ones are needed  
 v22 <- load_variables(2022, "acs5", cache = TRUE)
@@ -56,7 +56,7 @@ total_population_health_insurance <- get_acs(
 health_insur_percentage <- no_health_insurance %>%
   inner_join(total_population_health_insurance, by = "GEOID") %>%
   mutate(insur_rate = (estimate - total_no_health_insurance) / estimate) %>% 
-  select(GEOID, geometry, insur_rate)
+  dplyr::select(GEOID, geometry, insur_rate)
 
 
 
@@ -69,7 +69,7 @@ median_income <- get_acs(
   year = 2022,
   survey = "acs5",
   geometry = FALSE
-) %>% select(GEOID, estimate) 
+) %>% dplyr::select(GEOID, estimate) 
 
 incm_max <- max(median_income$estimate, na.rm = TRUE)
 
@@ -110,7 +110,7 @@ total_population_bachelors <- get_acs(
 bachelors_plus_percentage <- bachelors_plus %>%
   inner_join(total_population_bachelors, by = "GEOID") %>%
   mutate(educ_rate = bachelors_degree_or_higher / estimate) %>% 
-  select(GEOID, educ_rate)
+  dplyr::select(GEOID, educ_rate)
 
 
 
@@ -139,7 +139,7 @@ total_population_race <- get_acs(
 non_white_percentage <- non_hispanic_white %>%
   inner_join(total_population_race, by = "GEOID") %>%
   mutate(PoC = (estimate.y - estimate.x) / estimate.y) %>%
-  select(GEOID, PoC)
+  dplyr::select(GEOID, PoC)
 
 
 ################################################################################
@@ -213,7 +213,7 @@ ej_stressors <- ej_stressors %>%
   mutate(EJStress = CST_BG/ejstrs_max)  # THIS VARIABLE IS MAX STANDARDIZED TO BE ON SAME SCALE AS OTHER VARS
 
 # Reduce that FeatureClass to just GEOID and EJStress 
-ej_stressors <- ej_stressors %>% select(GEOID, EJStress)
+ej_stressors <- ej_stressors %>% dplyr::select(GEOID, EJStress)
 
 #Remove duplicates 
 ej_stressors <- ej_stressors %>%
@@ -245,7 +245,7 @@ joined_data <- st_transform(joined_data, crs = 26918)
 # Reduce to just pref_id_num field and rename to ID
 brownfields <- brownfields %>% 
   mutate(ID = pref_id_num) %>% 
-  select(ID)
+  dplyr::select(ID)
 
 ## RUN THE SPATIAL JOIN(S)
 
@@ -253,7 +253,6 @@ brownfields <- brownfields %>%
 
 # These spatial joins create a new feature for every match, so when a Block Group has multiple 
 # brownfields within this distance, this creates multiple rows (one for each brownfield ID)
-
 
 # 500 meter join
 joined_within_distance <- st_join(
@@ -309,10 +308,38 @@ joined_data_with_counts <- joined_within_distance %>%
 final_joined_data <- left_join(final_joined_data, st_drop_geometry(joined_data_with_counts), by = "GEOID")
 
 
+## CALCULATE DISTANCE TO NEAREST BROWNFIELD 
+
+# Calculate distance matrix
+distances <- st_distance(final_joined_data, brownfields)
+
+# Find the minimum distance to the nearest brownfield for each Census Tract
+final_joined_data$min_dist_to_brownfield <- apply(distances, 1, min)
+
+
+## CLEAN UP AND VALIDATE 
 
 # Drop empty geometries (fields with no geometry and no census data)
 final_joined_data <- final_joined_data %>% 
   filter(!st_is_empty(geometry))
+
+# Map it
+choropleth_map <- ggplot() +
+  geom_sf(data = final_joined_data, aes(fill = min_dist_to_brownfield), color = "white", size = 0.2) +
+  geom_sf(data = brownfields, color = "white", size = 2, shape = 21, fill = "red") +
+  
+  scale_fill_viridis_c(option = "plasma", name = "Distance to Nearest Brownfield (m)") +
+  
+  labs(title = "Distance to Nearest Brownfield by Census Tract",
+       subtitle = "Choropleth Map with Brownfield Locations",
+       caption = "Data Source: NJDEP, US Census Bureau") +
+  
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5))
+
+print(choropleth_map)
+
 
 ################################################################################
 ### EXPORT SHAPEFILE TO WORKSPACE 

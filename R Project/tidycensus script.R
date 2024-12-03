@@ -1,3 +1,4 @@
+
 # THIS SCRIPT IS USED FOR GENERATING CENSUS FEATURES, JOINING THAT WITH THE #
 # EJ STRESSOR DATA, THEN RUNNING A SPATIAL JOIN WITH THE BROWNFIELDS POINTS #
 # SAR AND SPATIAL AUTOCORRELATION ANALYSIS TAKES PLACES IN THE NEXT SCRIPT  # 
@@ -14,7 +15,7 @@ library(ggplot2)
 ### SET UP 
 
 # Set Census API key (only needed once, then you can skip this)
-#census_api_key("censusapikey", install = TRUE)
+#census_api_key("key", install = TRUE)
 
 # Check all Census API variables for each indicator to select which ones are needed  
 v22 <- load_variables(2022, "acs5", cache = TRUE)
@@ -22,6 +23,7 @@ hi <- v22 %>% filter(str_detect(name,"B27010")) # Health insurance
 inc <- v22 %>% filter(str_detect(name, "B19013")) # Income
 ed <- v22 %>% filter(str_detect(name, "B15003")) # Education
 rc <- v22 %>% filter(str_detect(name, "B03002")) # Race
+em <- v22 %>% filter(str_detect(name, "B23025")) # Employment rate
 
 
 ################################################################################
@@ -139,7 +141,35 @@ total_population_race <- get_acs(
 non_white_percentage <- non_hispanic_white %>%
   inner_join(total_population_race, by = "GEOID") %>%
   mutate(PoC = (estimate.y - estimate.x) / estimate.y) %>%
-  dplyr::select(GEOID, PoC)
+  mutate(TotlPop = estimate.y) %>% 
+  dplyr::select(GEOID, PoC, TotlPop)
+
+## Unemployment Rate
+# Unemployed population
+unemployed <- get_acs(
+  geography = "block group",
+  variables = c(Unemployed = "B23025_005"),
+  state = "NJ",
+  year = 2022,
+  survey = "acs5",
+  geometry = FALSE
+)
+
+# Total Population for Unemployed
+total_population_employment <- get_acs(
+  geography = "block group",
+  variables = c(total = "B23025_001"),
+  state = "NJ",
+  year = 2022,
+  survey = "acs5",
+  geometry = FALSE
+)
+
+# Calculate percentage of population that is NOT non-Hispanic White
+unemployment_rate <- unemployed %>%
+  inner_join(total_population_employment, by = "GEOID") %>%
+  mutate(unemp_rate = estimate.x / estimate.y) %>%
+  dplyr::select(GEOID, unemp_rate)
 
 
 ################################################################################
@@ -150,7 +180,8 @@ non_white_percentage <- non_hispanic_white %>%
 census_data <- health_insur_percentage %>%
   left_join(median_income, by = "GEOID") %>%
   left_join(bachelors_plus_percentage, by = "GEOID") %>%
-  left_join(non_white_percentage, by = "GEOID")
+  left_join(non_white_percentage, by = "GEOID") %>% 
+  left_join(unemployment_rate, by = "GEOID")
 
 # Project finale GIS feature into NAD 83 UTM Zone 18N (units are in meters)
 census_data <- st_transform(census_data, crs = 26918)
@@ -196,12 +227,21 @@ ggplot(census_data) +
   labs(title = "New Jersey (2022)",
        fill = "Percentage of People of Color")
 
+# Unemployment Rates
+ggplot(census_data) +
+  geom_sf(aes(fill = unemp_rate)) +
+  #scale_fill_gradient(low = "white", high = "black") +  # Grayscale gradient
+  scale_fill_viridis_c(option = "D") +  # Viridis color scale
+  theme_minimal() +
+  labs(title = "New Jersey (2022)",
+       fill = "Unemployment Rate")
+
 ################################################################################
 ### JOIN THIS CENSUS FEATURE WITH THE EJ STRESSORS DATASET
 
 # Import ej stressors dataset from personal geodatabase
 ej_stressors_fc <- st_read(dsn = "C:/Users/cjkno/Documents/My Documents/Classes - '23 Spring/Research/Paper - Peter Brownfield Paper/Arc Project - Peter's Brownfield Paper/Default.gdb",
-                        layer = "EnvironmentalJusticeEJLawCombinedStressorSummary_UPDATED")
+                        layer = "EnvironmentalJusticeEJLawCombinedStressorSummary_UPDATED_Urban")
 
 # Make a copy 
 ej_stressors <- ej_stressors_fc 
@@ -213,7 +253,7 @@ ej_stressors <- ej_stressors %>%
   mutate(EJStress = CST_BG/ejstrs_max)  # THIS VARIABLE IS MAX STANDARDIZED TO BE ON SAME SCALE AS OTHER VARS
 
 # Reduce that FeatureClass to just GEOID and EJStress 
-ej_stressors <- ej_stressors %>% dplyr::select(GEOID, EJStress)
+ej_stressors <- ej_stressors %>% dplyr::select(GEOID, EJStress, UrbanPct)
 
 #Remove duplicates 
 ej_stressors <- ej_stressors %>%

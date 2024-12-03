@@ -8,6 +8,11 @@ library(sf)
 library(spatialreg)
 library(dplyr)
 library(RNOmni)
+library(AER)
+library(lmtest)
+library(broom)
+library(ggplot2)
+
 
 ### SET UP 
 
@@ -136,29 +141,73 @@ print(lm_tests)
 lm_model <- lm(model, data = sf)
 summary(lm_model)
 
+#Confidence Interval
+
+confint(lm_model, level = 0.95)
+
+# Tidy the model to extract coefficients and confidence intervals
+model_summary <- tidy(lm_model, conf.int = TRUE, conf.level = 0.95)
+
+# Plot using ggplot2
+ggplot(model_summary, aes(x = term, y = estimate, ymin = conf.low, ymax = conf.high)) +
+  geom_point() +                          # Plot point estimates
+  geom_errorbar(width = 0.2) +             # Add error bars for confidence intervals
+  coord_flip() +                           # Flip coordinates for horizontal layout
+  theme_minimal() + 
+  labs(title = "Coefficient Plot with 95% Confidence Intervals",
+       x = "Predictors",
+       y = "Coefficient Estimate") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
 # Spatial Autoregressive Lag Model (SAR) (based on results from LM test)
-sar_model <- lagsarlm(model, data = sf, listw = weights)
+#sar_model <- lagsarlm(model, data = sf, listw = weights)
 summary(sar_model)
+confint(sar_model, level = 0.95)
+
 # err_model <- errorsarlm(model, data = sf, listw = weights)
 # summary(err_model)
 
+### Endogeneity check 
 
-# DISTANCE MODELS
-# Set regression model formula
-model <- Dist ~ insur_rate + medn_incm + educ_rate + PoC + EJStress
+## First-stage regression: Endogenous variable regressed on the instrument and other covariates
+#Unemployment rate
+first_stage_full <- lm(medn_incm ~ unemp_rate + educ_rate  + insur_rate  + PoC + EJStress, data = sf)
+first_stage_reduced <- lm(medn_incm ~ educ_rate + insur_rate+ PoC + EJStress, data = sf)
+anova(first_stage_reduced, first_stage_full) # F Test
 
-# Lagrange Multiplier Test for Spatial Lag and Spatial Error models
-lm_tests <- lm.RStests(lm(model, data = sf), listw = weights, test = "all")
-print(lm_tests)
-#Results indicate lag and error model are equally appropriate 
+#Urban 
+first_stage_full <- lm(educ_rate ~ UrbanPct + insur_rate + medn_incm + PoC + EJStress, data = sf)
+first_stage_reduced <- lm(educ_rate ~ insur_rate + medn_incm + PoC + EJStress, data = sf)
+anova(first_stage_reduced, first_stage_full) # F Test
 
-# Standard OLS Model
-lm_model <- lm(model, data = sf)
-summary(lm_model)
+#Total Pop 
+first_stage_full <- lm(PoC ~ TotlPop + insur_rate + medn_incm + educ_rate + EJStress, data = sf)
+first_stage_reduced <- lm(PoC ~ insur_rate + medn_incm + educ_rate + EJStress, data = sf)
+anova(first_stage_reduced, first_stage_full) # F Test
 
-# Spatial Autoregressive Lag Model (SAR) (based on results from LM test)
-sar_model <- lagsarlm(model, data = sf, listw = weights)
-summary(sar_model)
-# err_model <- errorsarlm(model, data = sf, listw = weights)
-# summary(err_model)
+#Total pop to POC selected as best measure 
+cor.test(sf$TotlPop, sf$BrwnFl_500, method = "pearson")
+cor.test(sf$TotlPop, sf$PoC, method = "pearson")
+
+## Run model
+iv_model <- ivreg(BrwnFl_500 ~ insur_rate + medn_incm + educ_rate + PoC + EJStress | 
+                               insur_rate + medn_incm + educ_rate + TotlPop + EJStress, 
+                  data = sf)
+
+summary(iv_model)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
